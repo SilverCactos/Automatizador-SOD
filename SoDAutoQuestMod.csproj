@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <AssemblyName>SoDAutoQuestMod</AssemblyName>
+    <RootNamespace>SoDAutoQuestMod</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- BepInEx -->
+    <Reference Include="BepInEx">
+      <HintPath>c:\Users\srcac\Downloads\sod_windows (1)\School of Dragons\BepInEx\core\BepInEx.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+
+    <!-- Console BlazingTwist -->
+    <Reference Include="BTConsole">
+      <HintPath>c:\Users\srcac\Downloads\sod_windows (1)\School of Dragons\BepInEx\plugins\BTConsole.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+
+    <!-- Código do Jogo -->
+    <Reference Include="Assembly-CSharp">
+      <HintPath>c:\Users\srcac\Downloads\sod_windows (1)\School of Dragons\DOMain_Data\Managed\Assembly-CSharp.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+
+    <!-- Módulos Unity -->
+    <Reference Include="UnityEngine">
+      <HintPath>c:\Users\srcac\Downloads\sod_windows (1)\School of Dragons\DOMain_Data\Managed\UnityEngine.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>c:\Users\srcac\Downloads\sod_windows (1)\School of Dragons\DOMain_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>c:\Users\srcac\Downloads\sod_windows (1)\School of Dragons\DOMain_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>c:\Users\srcac\Downloads\sod_windows (1)\School of Dragons\DOMain_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>c:\Users\srcac\Downloads\sod_windows (1)\School of Dragons\DOMain_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

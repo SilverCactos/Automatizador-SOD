@@ -1,0 +1,9 @@
+C:\Users\srcac\Downloads\automatizador\obj\Release\net472\SoDAutoQuestMod.csproj.AssemblyReference.cache
+C:\Users\srcac\Downloads\automatizador\obj\Release\net472\SoDAutoQuestMod.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\srcac\Downloads\automatizador\obj\Release\net472\SoDAutoQuestMod.AssemblyInfoInputs.cache
+C:\Users\srcac\Downloads\automatizador\obj\Release\net472\SoDAutoQuestMod.AssemblyInfo.cs
+C:\Users\srcac\Downloads\automatizador\obj\Release\net472\SoDAutoQuestMod.csproj.CoreCompileInputs.cache
+C:\Users\srcac\Downloads\automatizador\bin\Release\net472\SoDAutoQuestMod.dll
+C:\Users\srcac\Downloads\automatizador\bin\Release\net472\SoDAutoQuestMod.pdb
+C:\Users\srcac\Downloads\automatizador\obj\Release\net472\SoDAutoQuestMod.dll
+C:\Users\srcac\Downloads\automatizador\obj\Release\net472\SoDAutoQuestMod.pdb

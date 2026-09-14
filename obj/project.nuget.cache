@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "qfNwbwqJIlc=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\srcac\\Downloads\\automatizador\\SoDAutoQuestMod.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\srcac\\.nuget\\packages\\microsoft.netframework.referenceassemblies\\1.0.3\\microsoft.netframework.referenceassemblies.1.0.3.nupkg.sha512",
+    "C:\\Users\\srcac\\.nuget\\packages\\microsoft.netframework.referenceassemblies.net472\\1.0.3\\microsoft.netframework.referenceassemblies.net472.1.0.3.nupkg.sha512"
+  ],
+  "logs": []
+}
