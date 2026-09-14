@@ -7,3 +7,4 @@ C:\Users\srcac\Downloads\automatizador\bin\Release\net472\SoDAutoQuestMod.dll
 C:\Users\srcac\Downloads\automatizador\bin\Release\net472\SoDAutoQuestMod.pdb
 C:\Users\srcac\Downloads\automatizador\obj\Release\net472\SoDAutoQuestMod.dll
 C:\Users\srcac\Downloads\automatizador\obj\Release\net472\SoDAutoQuestMod.pdb
+C:\Users\srcac\Downloads\automatizador\obj\Release\net472\SoDAutoQuestMod.sourcelink.json

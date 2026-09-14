@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("SoDAutoQuestMod")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d259698a2b017d1cbc12e586bf7f76ce5ec1c616")]
 [assembly: System.Reflection.AssemblyProductAttribute("SoDAutoQuestMod")]
 [assembly: System.Reflection.AssemblyTitleAttribute("SoDAutoQuestMod")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Text;
 using BepInEx;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace SoDAutoQuestMod
 {
@@ -11,21 +13,55 @@ namespace SoDAutoQuestMod
     {
         public const string PLUGIN_GUID = "com.usuario.sod.autoquest";
         public const string PLUGIN_NAME = "SoD Auto Quest";
-        public const string PLUGIN_VERSION = "1.9.0";
+        public const string PLUGIN_VERSION = "2.1.1";
 
-        // Atalhos
-        private KeyCode keyAutoComplete = KeyCode.F8;      // F8: Forçar conclusão da missão atual
-        private KeyCode keyToggleAutoMode = KeyCode.F9;    // F9: Liga/Desliga modo contínuo
-        private KeyCode keyUnlockPlayer = KeyCode.F10;     // F10: Destravar HUD/Controles
+        // Ative para logar no console do BepInEx quais widgets existem em cada diálogo
+        // visível. Útil para descobrir o nome exato dos botões caso algum diálogo
+        // continue não sendo fechado automaticamente.
+        private const bool DEBUG_LOG_WIDGETS = false;
+
+        // ---------------- Atalhos ----------------
+        private readonly KeyCode keyAutoComplete = KeyCode.F8;    // F8: Forçar conclusão da missão atual
+        private readonly KeyCode keyToggleAutoMode = KeyCode.F9;  // F9: Liga/Desliga modo contínuo
+        private readonly KeyCode keyUnlockPlayer = KeyCode.F10;   // F10: Destravar HUD/Controles manualmente
+
         private bool isAutoModeActive = false;
 
-        private float autoTimer = 0f;
-        private const float AUTO_INTERVAL = 1.0f; // Intervalo ágil de 1.0s
+        // ---------------- Timers ----------------
+        // Diálogos/cutscenes são checados com bastante frequência para nunca "prender" a tela.
+        private const float DIALOG_CHECK_INTERVAL = 0.25f;
+        private float dialogCheckTimer = 0f;
 
+        // Progresso de missão é checado a cada 1s (reenvia o comando se a missão travar).
+        private const float TASK_CHECK_INTERVAL = 1.0f;
+        private const float TASK_RETRY_INTERVAL = 2.5f;
+        private float taskCheckTimer = 0f;
         private float taskRetryTimer = 0f;
         private int currentProcessingTaskId = -1;
 
+        // Se não houver NENHUMA atividade (sem missão ativa, sem diálogo fechado, sem
+        // cutscene encerrada) por esse tempo seguido, o modo automático se desliga sozinho.
+        // Fechar um diálogo ou encerrar uma cutscene reinicia essa contagem, porque isso
+        // costuma ser sinal de que uma nova missão está prestes a aparecer.
+        private const float NO_TASKS_GRACE_PERIOD = 8f;
+        private float noTasksTimer = 0f;
+
+        // ---------------- Reflection (console) ----------------
         private MethodInfo onCommandSubmittedMethod = null;
+        private bool consoleLookupFailedLogged = false;
+
+        // Nomes candidatos de botão. Vários nomes são tentados porque diálogos diferentes
+        // (oferta de missão, entrega de recompensa, fala de NPC) nem sempre usam o mesmo id.
+        private static readonly string[] AcceptButtonNames =
+        {
+            "BtnAccept", "BtnYes", "BtnStart", "BtnOK", "BtnConfirm",
+            "BtnContinue", "BtnClaim", "BtnCollect", "BtnTurnIn", "BtnDone"
+        };
+
+        private static readonly string[] CloseButtonNames =
+        {
+            "BtnNext", "BtnClose", "BtnOK", "BtnSkip", "BtnCancel"
+        };
 
         private void Awake()
         {
@@ -34,56 +70,89 @@ namespace SoDAutoQuestMod
 
         private void Update()
         {
-            // F8: Forçar conclusão imediata
+            HandleHotkeys();
+
+            if (!isAutoModeActive) return;
+
+            // 1) Diálogos e cutscenes: checagem rápida e constante, para nunca travar a tela.
+            dialogCheckTimer += Time.deltaTime;
+            if (dialogCheckTimer >= DIALOG_CHECK_INTERVAL)
+            {
+                dialogCheckTimer = 0f;
+                bool activityDetected = DismissDialogsAndPopups();
+
+                // Fechar um diálogo ou encerrar uma cutscene é sinal de que o jogo ainda
+                // está progredindo — isso "reinicia o relógio" do desligamento automático,
+                // mesmo que pActiveTasks esteja momentaneamente vazio.
+                if (activityDetected)
+                {
+                    noTasksTimer = 0f;
+                }
+            }
+
+            // 2) Progresso de missão: checagem um pouco mais espaçada.
+            taskCheckTimer += Time.deltaTime;
+            taskRetryTimer += Time.deltaTime;
+            if (taskCheckTimer >= TASK_CHECK_INTERVAL)
+            {
+                taskCheckTimer = 0f;
+                ProcessActiveTasks();
+
+                // Só mexemos no estado do avatar/HUD fora de uma cutscene/ação de missão,
+                // para não brigar com o próprio jogo e fazer a HUD sumir.
+                if (!IsMissionActionPending())
+                {
+                    RestorePlayerAndHUD();
+                }
+            }
+        }
+
+        private void HandleHotkeys()
+        {
             if (Input.GetKeyDown(keyAutoComplete))
             {
                 currentProcessingTaskId = -1;
                 taskRetryTimer = 0f;
                 ForceCompleteCurrentTask();
                 DismissDialogsAndPopups();
-                RestorePlayerAndHUD();
-            }
-
-            // F9: Liga/Desliga modo contínuo
-            if (Input.GetKeyDown(keyToggleAutoMode))
-            {
-                isAutoModeActive = !isAutoModeActive;
-                currentProcessingTaskId = -1;
-                taskRetryTimer = 0f;
-                Logger.LogInfo($"Modo Auto-Quest: {(isAutoModeActive ? "ATIVADO" : "DESATIVADO")}");
-
-                if (!isAutoModeActive)
+                if (!IsMissionActionPending())
                 {
                     RestorePlayerAndHUD();
                 }
             }
 
-            // F10: Destravar HUD e Movimento manualmente se desejar
+            if (Input.GetKeyDown(keyToggleAutoMode))
+            {
+                SetAutoMode(!isAutoModeActive);
+            }
+
             if (Input.GetKeyDown(keyUnlockPlayer))
             {
                 RestorePlayerAndHUD();
                 Logger.LogInfo("[AutoQuest] F10: HUD e Controles restaurados.");
             }
+        }
 
-            // Loop Automático Contínuo
-            if (isAutoModeActive)
+        private void SetAutoMode(bool active)
+        {
+            isAutoModeActive = active;
+            currentProcessingTaskId = -1;
+            taskRetryTimer = 0f;
+            noTasksTimer = 0f;
+            dialogCheckTimer = 0f;
+            taskCheckTimer = 0f;
+
+            Logger.LogInfo($"[AutoQuest] Modo Auto-Quest: {(isAutoModeActive ? "ATIVADO" : "DESATIVADO")}");
+
+            if (!isAutoModeActive)
             {
-                autoTimer += Time.deltaTime;
-                taskRetryTimer += Time.deltaTime;
-
-                if (autoTimer >= AUTO_INTERVAL)
-                {
-                    autoTimer = 0f;
-                    
-                    ProcessActiveTasks();
-                    DismissDialogsAndPopups();
-                    RestorePlayerAndHUD();
-                }
+                RestorePlayerAndHUD();
             }
         }
 
         /// <summary>
-        /// Restaura a movimentação, câmera e a barra de interface (UiToolbar)
+        /// Restaura movimentação, câmera e a barra de interface (UiToolbar).
+        /// Nunca esconde nada — só garante que o que deveria estar visível, esteja.
         /// </summary>
         private void RestorePlayerAndHUD()
         {
@@ -112,31 +181,43 @@ namespace SoDAutoQuestMod
             }
         }
 
+        private bool IsMissionActionPending()
+        {
+            try
+            {
+                return MissionManager.pInstance != null && MissionManager.MissionActionPending();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         /// <summary>
-        /// Força a conclusão imediata (usado pelo F8)
+        /// Força a conclusão imediata da missão atual (usado pelo F8).
         /// </summary>
         private void ForceCompleteCurrentTask()
         {
             if (MissionManager.pInstance == null) return;
             List<Task> activeTasks = MissionManager.pInstance.pActiveTasks;
+            if (activeTasks == null || activeTasks.Count == 0) return;
 
-            if (activeTasks != null && activeTasks.Count > 0)
+            for (int i = 0; i < activeTasks.Count; i++)
             {
-                for (int i = 0; i < activeTasks.Count; i++)
+                Task task = activeTasks[i];
+                if (task != null && !task.pCompleted)
                 {
-                    Task task = activeTasks[i];
-                    if (task != null && !task.pCompleted)
-                    {
-                        Logger.LogInfo($"[AutoQuest] (F8) Forçando 'task complete {task.TaskID}' ({task.Name})");
-                        ExecuteConsoleCommand($"task complete {task.TaskID}");
-                        break;
-                    }
+                    Logger.LogInfo($"[AutoQuest] (F8) Forçando 'task complete {task.TaskID}' ({task.Name})");
+                    ExecuteConsoleCommand($"task complete {task.TaskID}");
+                    break;
                 }
             }
         }
 
         /// <summary>
-        /// Processa a missão ativa com reenvio caso ela continue ativa após 2.5s
+        /// Processa a missão ativa, reenviando o comando se ela continuar ativa depois
+        /// de TASK_RETRY_INTERVAL segundos. Quando não há mais nenhuma missão ativa por
+        /// tempo suficiente, desliga o modo automático sozinho.
         /// </summary>
         private void ProcessActiveTasks()
         {
@@ -146,15 +227,24 @@ namespace SoDAutoQuestMod
             if (activeTasks == null || activeTasks.Count == 0)
             {
                 currentProcessingTaskId = -1;
+                noTasksTimer += TASK_CHECK_INTERVAL;
+
+                if (noTasksTimer >= NO_TASKS_GRACE_PERIOD)
+                {
+                    Logger.LogInfo("[AutoQuest] Nenhuma missão ativa encontrada. Encerrando o modo automático.");
+                    SetAutoMode(false);
+                }
                 return;
             }
+
+            noTasksTimer = 0f;
 
             for (int i = 0; i < activeTasks.Count; i++)
             {
                 Task task = activeTasks[i];
                 if (task != null && !task.pCompleted)
                 {
-                    if (task.TaskID != currentProcessingTaskId || taskRetryTimer >= 2.5f)
+                    if (task.TaskID != currentProcessingTaskId || taskRetryTimer >= TASK_RETRY_INTERVAL)
                     {
                         currentProcessingTaskId = task.TaskID;
                         taskRetryTimer = 0f;
@@ -162,7 +252,7 @@ namespace SoDAutoQuestMod
                         Logger.LogInfo($"[AutoQuest] Enviando comando: task complete {task.TaskID} ({task.Name})");
                         ExecuteConsoleCommand($"task complete {task.TaskID}");
                     }
-                    break;
+                    return;
                 }
             }
         }
@@ -173,20 +263,26 @@ namespace SoDAutoQuestMod
             {
                 if (onCommandSubmittedMethod == null)
                 {
-                    Type consoleType = Type.GetType("BTConsole.Console, BTConsole");
-                    if (consoleType != null)
+                    onCommandSubmittedMethod = ResolveConsoleCommandMethod();
+                    if (onCommandSubmittedMethod == null)
                     {
-                        onCommandSubmittedMethod = consoleType.GetMethod(
-                            "OnCommandSubmitted",
-                            BindingFlags.NonPublic | BindingFlags.Static
-                        );
+                        if (!consoleLookupFailedLogged)
+                        {
+                            consoleLookupFailedLogged = true;
+                            Logger.LogError(
+                                "[AutoQuest] Não foi possível localizar o método do BTConsole por reflection. " +
+                                "Nenhum comando será enviado e nenhuma missão vai avançar até isso ser corrigido. " +
+                                "Confirme se BTConsole.dll está em BepInEx/plugins e se o mod está referenciando a versão correta.");
+                        }
+                        return;
                     }
                 }
 
-                if (onCommandSubmittedMethod != null)
-                {
-                    onCommandSubmittedMethod.Invoke(null, new object[] { command, false });
-                }
+                onCommandSubmittedMethod.Invoke(null, new object[] { command, false });
+            }
+            catch (TargetInvocationException tie)
+            {
+                Logger.LogError($"[AutoQuest] Erro ao executar comando '{command}': {tie.InnerException?.Message ?? tie.Message}");
             }
             catch (Exception ex)
             {
@@ -195,100 +291,380 @@ namespace SoDAutoQuestMod
         }
 
         /// <summary>
-        /// Aceita diálogos de NPC, ofertas de missões e confirma recompensas de forma 100% segura
+        /// Procura o método estático responsável por processar comandos do BTConsole.
+        /// Tenta algumas variações de nome de tipo/método porque isso pode mudar entre versões do BTConsole.
         /// </summary>
-        private void DismissDialogsAndPopups()
+        private MethodInfo ResolveConsoleCommandMethod()
         {
-            // 1. Janelas de diálogo de fala do NPC (UiMissionActionDB)
-            try
+            string[] typeCandidates =
             {
-                UiMissionActionDB[] actionDBs = UnityEngine.Object.FindObjectsOfType<UiMissionActionDB>();
-                if (actionDBs != null && actionDBs.Length > 0)
+                "BTConsole.Console, BTConsole",
+                "BTConsole.BTConsole, BTConsole",
+                "BTConsole.ConsoleController, BTConsole"
+            };
+
+            string[] methodNameCandidates = { "OnCommandSubmitted", "SubmitCommand", "ExecuteCommand", "RunCommand" };
+
+            foreach (string typeName in typeCandidates)
+            {
+                Type consoleType = Type.GetType(typeName);
+                if (consoleType == null) continue;
+
+                foreach (string methodName in methodNameCandidates)
                 {
-                    foreach (var actionDB in actionDBs)
+                    MethodInfo mi = consoleType.GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static)
+                                 ?? consoleType.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static);
+
+                    if (mi != null)
                     {
-                        if (actionDB != null && actionDB.gameObject != null && actionDB.GetVisibility())
-                        {
-                            KAWidget btnNext = actionDB.FindItem("BtnNext");
-                            if (btnNext != null && btnNext.GetVisibility()) actionDB.OnClick(btnNext);
-
-                            KAWidget btnYes = actionDB.FindItem("BtnYes");
-                            if (btnYes != null && btnYes.GetVisibility()) actionDB.OnClick(btnYes);
-
-                            KAWidget btnOK = actionDB.FindItem("BtnOK");
-                            if (btnOK != null && btnOK.GetVisibility()) actionDB.OnClick(btnOK);
-
-                            KAWidget btnClose = actionDB.FindItem("BtnClose");
-                            if (btnClose != null && btnClose.GetVisibility()) actionDB.OnClick(btnClose);
-                        }
+                        Logger.LogInfo($"[AutoQuest] Console encontrado via reflection: {typeName}.{methodName}");
+                        return mi;
                     }
                 }
             }
-            catch {}
 
-            // 2. Janela de detalhes de missão do NPC (UiNPCQuestDetails)
+            return null;
+        }
+
+        /// <summary>
+        /// Fecha diálogos de NPC, aceita ofertas de missão e confirma recompensas.
+        /// Também encerra cutscenes/ações de missão pendentes para não prender a tela.
+        /// Roda com alta frequência (DIALOG_CHECK_INTERVAL) para não deixar nada "preso".
+        ///
+        /// Em vez de depender só de nomes de botão "chutados" (que podem não bater com
+        /// o jogo real e deixar tudo travado), cada diálogo visível agora é varrido:
+        /// se nenhum dos nomes conhecidos funcionar, procuramos entre TODOS os widgets
+        /// filhos por algo que pareça um botão de ação positiva. Se mesmo assim nada for
+        /// clicado, listamos os widgets encontrados no log para diagnóstico.
+        /// </summary>
+        /// <returns>
+        /// true se algum diálogo foi clicado, alguma cutscene foi encerrada, ou o
+        /// fallback de Button clicou em algo — ou seja, se houve qualquer sinal de que
+        /// o jogo ainda está progredindo.
+        /// </returns>
+        private bool DismissDialogsAndPopups()
+        {
+            bool clickedSomething = false;
+
+            clickedSomething |= HandleMissionActionDialogs();
+            clickedSomething |= HandleQuestDetailDialogs();
+            clickedSomething |= HandleGenericPopups();
+
+            // Cutscenes/ações de missão pendentes — chamado a cada checagem para não
+            // deixar a cutscene "congelada" esperando múltiplos avanços.
             try
             {
-                UiNPCQuestDetails[] questDetails = UnityEngine.Object.FindObjectsOfType<UiNPCQuestDetails>();
-                if (questDetails != null && questDetails.Length > 0)
+                if (MissionManager.pInstance != null && MissionManager.MissionActionPending())
                 {
-                    foreach (var details in questDetails)
+                    MissionManager.pInstance.EndAction();
+                    clickedSomething = true;
+                }
+            }
+            catch { }
+
+            // Último recurso: se nenhum diálogo "conhecido" foi clicado, procura por
+            // qualquer Button (UGUI) visível/interativo com nome de ação positiva
+            // (Accept/Yes/OK/Confirm/Claim/Continue/...) e clica nele diretamente.
+            // Isso cobre o caso de o diálogo travado ser de um tipo que o mod não conhece.
+            if (!clickedSomething)
+            {
+                clickedSomething |= TryClickAnyPositiveUnityButton();
+            }
+
+            return clickedSomething;
+        }
+
+        private bool HandleMissionActionDialogs()
+        {
+            bool clicked = false;
+            try
+            {
+                UiMissionActionDB[] dbs = UnityEngine.Object.FindObjectsOfType<UiMissionActionDB>();
+                if (dbs == null) return false;
+
+                foreach (var db in dbs)
+                {
+                    if (db == null || db.gameObject == null || !db.GetVisibility()) continue;
+
+                    KAWidget target = FindBestButtonExact(n => db.FindItem(n), CloseButtonNames)
+                                    ?? FindBestButtonExact(n => db.FindItem(n), AcceptButtonNames)
+                                    ?? FindBestButtonInChildren(db.gameObject);
+
+                    if (target != null)
                     {
-                        if (details != null && details.gameObject != null && details.GetVisibility())
-                        {
-                            KAWidget btnAccept = details.FindItem("BtnAccept");
-                            if (btnAccept != null && btnAccept.GetVisibility()) details.OnClick(btnAccept);
-
-                            KAWidget btnStart = details.FindItem("BtnStart");
-                            if (btnStart != null && btnStart.GetVisibility()) details.OnClick(btnStart);
-
-                            KAWidget btnOK = details.FindItem("BtnOK");
-                            if (btnOK != null && btnOK.GetVisibility()) details.OnClick(btnOK);
-
-                            KAWidget btnClose = details.FindItem("BtnClose");
-                            if (btnClose != null && btnClose.GetVisibility()) details.OnClick(btnClose);
-                        }
+                        db.OnClick(target);
+                        clicked = true;
+                        if (DEBUG_LOG_WIDGETS) Logger.LogInfo($"[AutoQuest][DEBUG] UiMissionActionDB: clicou em '{target.name}'");
+                    }
+                    else
+                    {
+                        LogAllVisibleWidgets("UiMissionActionDB", db.gameObject);
                     }
                 }
             }
-            catch {}
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"[AutoQuest] Erro em HandleMissionActionDialogs: {ex.Message}");
+            }
+            return clicked;
+        }
 
-            // 3. Pop-ups genéricos (KAUIGenericDB - Recompensas, avisos)
+        private bool HandleQuestDetailDialogs()
+        {
+            bool clicked = false;
             try
             {
-                KAUIGenericDB[] popups = UnityEngine.Object.FindObjectsOfType<KAUIGenericDB>();
-                if (popups != null && popups.Length > 0)
+                UiNPCQuestDetails[] dbs = UnityEngine.Object.FindObjectsOfType<UiNPCQuestDetails>();
+                if (dbs == null) return false;
+
+                foreach (var db in dbs)
                 {
-                    foreach (var popup in popups)
+                    if (db == null || db.gameObject == null || !db.GetVisibility()) continue;
+
+                    KAWidget target = FindBestButtonExact(n => db.FindItem(n), AcceptButtonNames)
+                                    ?? FindBestButtonExact(n => db.FindItem(n), CloseButtonNames)
+                                    ?? FindBestButtonInChildren(db.gameObject);
+
+                    if (target != null)
                     {
-                        if (popup != null && popup.gameObject != null && popup.GetVisibility())
-                        {
-                            KAWidget btnOK = popup.FindItem("BtnOK");
-                            if (btnOK != null && btnOK.GetVisibility()) popup.OnClick(btnOK);
-
-                            KAWidget btnYes = popup.FindItem("BtnYes");
-                            if (btnYes != null && btnYes.GetVisibility()) popup.OnClick(btnYes);
-
-                            KAWidget btnClose = popup.FindItem("BtnClose");
-                            if (btnClose != null && btnClose.GetVisibility()) popup.OnClick(btnClose);
-                        }
+                        db.OnClick(target);
+                        clicked = true;
+                        if (DEBUG_LOG_WIDGETS) Logger.LogInfo($"[AutoQuest][DEBUG] UiNPCQuestDetails: clicou em '{target.name}'");
+                    }
+                    else
+                    {
+                        LogAllVisibleWidgets("UiNPCQuestDetails", db.gameObject);
                     }
                 }
             }
-            catch {}
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"[AutoQuest] Erro em HandleQuestDetailDialogs: {ex.Message}");
+            }
+            return clicked;
+        }
 
-            // 4. MissionManager (encerrar cutscenes se pendentes)
+        private bool HandleGenericPopups()
+        {
+            bool clicked = false;
             try
             {
-                if (MissionManager.pInstance != null)
+                KAUIGenericDB[] dbs = UnityEngine.Object.FindObjectsOfType<KAUIGenericDB>();
+                if (dbs == null) return false;
+
+                foreach (var db in dbs)
                 {
-                    if (MissionManager.MissionActionPending())
+                    if (db == null || db.gameObject == null || !db.GetVisibility()) continue;
+
+                    KAWidget target = FindBestButtonExact(n => db.FindItem(n), AcceptButtonNames)
+                                    ?? FindBestButtonExact(n => db.FindItem(n), CloseButtonNames)
+                                    ?? FindBestButtonInChildren(db.gameObject);
+
+                    if (target != null)
                     {
-                        MissionManager.pInstance.EndAction();
+                        db.OnClick(target);
+                        clicked = true;
+                        if (DEBUG_LOG_WIDGETS) Logger.LogInfo($"[AutoQuest][DEBUG] KAUIGenericDB: clicou em '{target.name}'");
+                    }
+                    else
+                    {
+                        LogAllVisibleWidgets("KAUIGenericDB", db.gameObject);
                     }
                 }
             }
-            catch {}
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"[AutoQuest] Erro em HandleGenericPopups: {ex.Message}");
+            }
+            return clicked;
+        }
+
+        // ---------------- Busca de botão dentro de um diálogo já identificado ----------------
+
+        private KAWidget FindBestButtonExact(Func<string, KAWidget> findItem, string[] names)
+        {
+            foreach (var n in names)
+            {
+                KAWidget w = null;
+                try { w = findItem(n); } catch { }
+                if (w != null && SafeGetVisibility(w)) return w;
+            }
+            return null;
+        }
+
+        private KAWidget FindBestButtonInChildren(GameObject root)
+        {
+            KAWidget best = null;
+            int bestScore = int.MinValue;
+            try
+            {
+                KAWidget[] widgets = root.GetComponentsInChildren<KAWidget>(true);
+                if (widgets == null) return null;
+
+                foreach (var w in widgets)
+                {
+                    if (w == null || !SafeGetVisibility(w)) continue;
+
+                    var tokens = TokenizeCamelCase(w.name);
+                    if (!LooksLikeButton(tokens)) continue;
+
+                    int score = ScoreTokens(tokens);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        best = w;
+                    }
+                }
+            }
+            catch { }
+            return best;
+        }
+
+        private bool SafeGetVisibility(KAWidget w)
+        {
+            try { return w.GetVisibility(); } catch { return false; }
+        }
+
+        private void LogAllVisibleWidgets(string label, GameObject root)
+        {
+            try
+            {
+                KAWidget[] widgets = root.GetComponentsInChildren<KAWidget>(true);
+                if (widgets == null || widgets.Length == 0)
+                {
+                    Logger.LogWarning($"[AutoQuest] {label} visível mas nenhum KAWidget filho foi encontrado.");
+                    return;
+                }
+
+                var parts = new List<string>();
+                foreach (var w in widgets)
+                {
+                    if (w == null) continue;
+                    parts.Add($"{w.name}(visivel={SafeGetVisibility(w)})");
+                }
+
+                Logger.LogWarning(
+                    $"[AutoQuest] {label} visível, nenhum botão de ação foi reconhecido automaticamente. " +
+                    $"Widgets encontrados: {string.Join(", ", parts)}. " +
+                    "Envie essa linha de log para ajustar o mod com o nome exato do botão.");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"[AutoQuest] Erro ao listar widgets de {label}: {ex.Message}");
+            }
+        }
+
+        // ---------------- Fallback: clique direto em Button (UGUI) da cena ----------------
+
+        private bool TryClickAnyPositiveUnityButton()
+        {
+            try
+            {
+                Button[] buttons = UnityEngine.Object.FindObjectsOfType<Button>();
+                if (buttons == null) return false;
+
+                Button best = null;
+                int bestScore = int.MinValue;
+
+                foreach (var btn in buttons)
+                {
+                    if (btn == null || !btn.isActiveAndEnabled || !btn.IsInteractable()) continue;
+
+                    var tokens = TokenizeCamelCase(btn.name);
+                    int score = ScoreTokens(tokens);
+
+                    // Só considera candidatos com intenção positiva clara, para não
+                    // clicar em botões aleatórios da interface (menu, opções, etc.).
+                    if (score < 100) continue;
+
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        best = btn;
+                    }
+                }
+
+                if (best != null)
+                {
+                    Logger.LogInfo($"[AutoQuest] Fallback: clicando via UnityEngine.UI.Button em '{best.name}'.");
+                    best.onClick.Invoke();
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"[AutoQuest] Erro no fallback de Button: {ex.Message}");
+            }
+            return false;
+        }
+
+        // ---------------- Utilitários de nome/score de botão ----------------
+
+        private static readonly HashSet<string> PositiveTokens = new HashSet<string>
+        {
+            "accept", "yes", "ok", "start", "confirm", "continue",
+            "claim", "collect", "turnin", "next", "done", "get", "receive"
+        };
+
+        private static readonly HashSet<string> NegativeTokens = new HashSet<string>
+        {
+            "no", "decline", "cancel", "back", "reject"
+        };
+
+        private static bool LooksLikeButton(List<string> tokens)
+        {
+            foreach (var t in tokens)
+                if (t == "btn" || t == "button") return true;
+            return false;
+        }
+
+        private static int ScoreTokens(List<string> tokens)
+        {
+            bool positive = false, negative = false;
+            foreach (var t in tokens)
+            {
+                if (PositiveTokens.Contains(t)) positive = true;
+                if (NegativeTokens.Contains(t)) negative = true;
+            }
+
+            if (positive) return 100;
+            if (negative) return -100;
+
+            foreach (var t in tokens)
+                if (t == "close") return 10;
+
+            return 0;
+        }
+
+        /// <summary>
+        /// Quebra um nome estilo "BtnAcceptQuest" ou "Btn_Accept_Quest" em tokens
+        /// minúsculos: ["btn", "accept", "quest"]. Evita falsos positivos de simples
+        /// Contains() (ex.: "no" dentro de "Notify").
+        /// </summary>
+        private static List<string> TokenizeCamelCase(string s)
+        {
+            var tokens = new List<string>();
+            if (string.IsNullOrEmpty(s)) return tokens;
+
+            var current = new StringBuilder();
+            foreach (char c in s)
+            {
+                if (c == '_' || c == '-' || c == ' ')
+                {
+                    if (current.Length > 0) { tokens.Add(current.ToString().ToLowerInvariant()); current.Clear(); }
+                    continue;
+                }
+
+                if (char.IsUpper(c) && current.Length > 0)
+                {
+                    tokens.Add(current.ToString().ToLowerInvariant());
+                    current.Clear();
+                }
+
+                current.Append(c);
+            }
+            if (current.Length > 0) tokens.Add(current.ToString().ToLowerInvariant());
+            return tokens;
         }
 
         private void OnGUI()
@@ -305,6 +681,6 @@ namespace SoDAutoQuestMod
     {
         public const string PLUGIN_GUID = "com.usuario.sod.autoquest";
         public const string PLUGIN_NAME = "SoD Auto Quest";
-        public const string PLUGIN_VERSION = "1.9.0";
+        public const string PLUGIN_VERSION = "2.1.1";
     }
 }
